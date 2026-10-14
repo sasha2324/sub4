@@ -1,0 +1,28 @@
+# --- Segreti ---
+.env
+strava_token.json
+
+# --- Dati personali: corse, tracce GPS, salute, piano ---
+dati/
+*.gpx
+*.zip
+*.csv
+*.xlsx
+corse_sincronizzate.json
+piano.json
+piano_maratona.html
+piano-chiaro.png
+PIANO_MARATONA.md
+strava_salute.py
+
+# --- Appunti personali e strumenti locali ---
+CLAUDE.md
+LEGGIMI.md
+docs/
+.claude/
+.playwright-mcp/
+
+# --- Sistema ---
+__pycache__/
+*.pyc
+.DS_Store
