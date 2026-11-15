@@ -171,7 +171,7 @@ def _fasi(piano, settimane, corse, FASI):
             stato, tag = "dopo", "da fare"
 
         if n == fase_ora:
-            criteri, aperto = sp.valuta_cancello(n, settimane, corse)
+            criteri, aperto = sp.valuta_cancello(n, settimane, corse, piano)
             voci = []
             for fatto, testo, dettaglio in criteri:
                 s = "si" if fatto else ("forse" if fatto is None else "no")
@@ -620,24 +620,43 @@ def genera(percorso, piano, corse, settimane, FASI):
     inizio   = sp.lunedi_di(datetime.strptime(piano["fase_inizio"], "%Y-%m-%d").date())
 
     # ── storico + previsione per il grafico ──
+    # Dove una rampa ha fissato il volume di una settimana, comanda la rampa:
+    # la curva della fase da sola disegnava 46 km il 16/11/2026 mentre il
+    # rientro dalla Norvegia ne prevedeva 23. Valgono anche le rampe chiuse,
+    # così le settimane passate mostrano quello che era previsto davvero.
+    rampa = {}
+    for r in [*(piano.get("rientri_passati") or []), piano.get("rientro") or {}]:
+        for lunedi, voce in (r.get("per_settimana") or {}).items():
+            if "volume" in voce:
+                rampa[lunedi] = voce["volume"]
+
     storico = []
     for s in settimane:
         dentro = s["lunedi"] >= inizio
         idx    = (s["lunedi"] - inizio).days // 7
         storico.append({
             "etichetta": s["etichetta"], "km": s["km"],
-            "previsto": sp.volume_previsto(fase, idx) if dentro else 0,
+            "previsto": (rampa.get(s["lunedi"].isoformat(), sp.volume_previsto(fase, idx))
+                         if dentro else 0),
             "reale": True, "in_corso": s["in_corso"],
         })
     ultimo_lun = settimane[-1]["lunedi"]
+    # Durante un rientro la previsione si ferma dove finisce la rampa: dopo,
+    # il piano non è ancora deciso, e una curva di fase disegnata lì
+    # sembrerebbe una promessa.
+    calendario = (piano.get("rientro") or {}).get("per_settimana") or {}
+    fine_rampa = max(calendario) if rientro and calendario else None
     futuro = []
     for k in range(1, SETTIMANE_FUTURE + 1):
         lun = ultimo_lun + timedelta(days=7 * k)
+        if fine_rampa and lun.isoformat() > fine_rampa:
+            break
         idx = (lun - inizio).days // 7
         fs  = fase if idx < 8 else min(fase + 1, 2)
         futuro.append({
             "etichetta": lun.strftime("%d/%m"), "km": 0,
-            "previsto": sp.volume_previsto(fs, idx if fs == fase else idx - 8),
+            "previsto": rampa.get(lun.isoformat(),
+                                  sp.volume_previsto(fs, idx if fs == fase else idx - 8)),
             "reale": False, "in_corso": False,
         })
 

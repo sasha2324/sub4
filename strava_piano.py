@@ -78,7 +78,11 @@ INIZIO_PIANO = "2026-08-17"
 
 # Obiettivo: maratona sotto le 4 ore = 5:41/km su 42,195 km.
 RITMO_GARA_SEC = 341        # 5:41 al km
-MEZZA_OBIETTIVO_MIN = 112   # 1:52 — proietta 3:55 con Riegel
+MEZZA_OBIETTIVO_MIN = 115   # ripiego: l'obiettivo vero sta in piano.json
+                            # ('mezza.obiettivo_secondi'). Era fisso a 112
+                            # ed è rimasto indietro quando il 16/10/2026
+                            # la mezza è passata da 1:52 a 1:55 per
+                            # coerenza con la maratona sotto le 4 ore.
 
 # Quante settimane dura il blocco maratona. NON è un numero fisso: dipende da
 # quanto dista la gara dalla mezza. Lo scarico finale si conta a ritroso da
@@ -122,7 +126,7 @@ FASI = [
         "scopo": "Costruire il volume e introdurre la soglia. Chiude con una mezza di verifica.",
         "sedute": ["Facile", "Soglia", "Facile", "Lungo"],
         "ratio":  [0.19, 0.22, 0.19, 0.40],
-        "cancello": "mezza maratona sotto 1:52 · 8 settimane ≥52 km · due lunghi ≥21 km",
+        "cancello": "mezza maratona sotto l'obiettivo · 8 settimane ≥52 km · due lunghi ≥21 km",
     },
     {
         "numero": 2,
@@ -988,6 +992,11 @@ def settimana_tipo(fase, sett_nella_fase, giorni=4):
 def etichetta_rientro(rientro):
     """«STOP» o «RIENTRO»: un blocco senza sedute non è un rientro graduale,
     è uno stop, e chiamarlo col nome giusto cambia come lo si legge."""
+    if rientro.get("tipo") == "ponte":
+        # Non è un rientro: è la rampa fra una fase e la successiva, quando il
+        # volume della fase nuova sarebbe un salto. Chiamarlo "RIENTRO" farebbe
+        # leggere come un infortunio quello che è un passaggio di fase.
+        return "PONTE"
     return "STOP" if rientro.get("tipo") == "stop" or not rientro.get("sedute") else "RIENTRO"
 
 
@@ -1086,6 +1095,12 @@ def sedute_rimanenti(piano, settimana, fase, n_sett, evento=None):
     dati, non data per scontata: chi corre il lungo di mercoledì non se lo
     ritrova da fare anche domenica.
 
+    Ogni seduta esce come (nome, km, come): il «come» viaggia INSIEME alla
+    seduta invece di essere ricercato dopo per nome. Cercarlo per nome
+    sbagliava ogni volta che due sedute della stessa settimana si chiamano
+    uguale — il 16/10/2026 la facile del sabato mostrava le istruzioni di
+    quella del mercoledì, perché erano entrambe «Facile».
+
     Il totale restituito è SEMPRE quello pieno della settimana, evento
     compreso. I due rami davano due cose diverse — col rientro il volume
     dichiarato (che la gara la contiene già), senza rientro una somma che non
@@ -1103,12 +1118,13 @@ def sedute_rimanenti(piano, settimana, fase, n_sett, evento=None):
         # e non è una seduta del rientro.
         gia_fatte = sum(1 for c in settimana.get("corse", [])
                         if c["data"] >= rientro["dal"])
-        rimaste = [(s["nome"], s["km"]) for s in rientro["sedute"]][gia_fatte:]
+        rimaste = [(s["nome"], s["km"], s.get("come", ""))
+                   for s in rientro["sedute"]][gia_fatte:]
         # Il volume del rientro è un programma, non un tetto: se ha già corso
         # più di quanto prevedeva, il totale della settimana è quello vero.
         # Altrimenti la settimana in cui allunga di un chilometro continua a
         # dichiarare il numero del foglio e sembra che manchi meno di quanto manca.
-        programmato = settimana["km"] + sum(k for _, k in rimaste) + km_evento
+        programmato = settimana["km"] + sum(s[1] for s in rimaste) + km_evento
         return rimaste, max(rientro.get("volume", programmato), programmato)
 
     sedute, vol_previsto = settimana_tipo(fase, n_sett, piano["giorni_settimana"])
@@ -1122,7 +1138,9 @@ def sedute_rimanenti(piano, settimana, fase, n_sett, evento=None):
     # resta da fare, altrimenti finisce in calendario due volte.
     lungo_coperto = lungo_fatto or evento_sostituisce_lungo(evento, lungo)
 
-    rimaste = [s for s in sedute if not (lungo_coperto and s[0] == "Lungo")]
+    # Le sedute standard non portano un testo proprio: lo dà ritmo_di().
+    rimaste = [(s[0], s[1], None) for s in sedute
+               if not (lungo_coperto and s[0] == "Lungo")]
 
     # Un evento programmato occupa una delle uscite della settimana.
     restano_n = max(piano["giorni_settimana"] - settimana["n"] - (1 if evento else 0), 0)
@@ -1130,13 +1148,13 @@ def sedute_rimanenti(piano, settimana, fase, n_sett, evento=None):
     if restano_n <= 0:
         return [], settimana["km"] + km_evento
     if restano_n >= len(rimaste):
-        return rimaste, settimana["km"] + sum(km for _, km in rimaste) + km_evento
+        return rimaste, settimana["km"] + sum(s[1] for s in rimaste) + km_evento
 
     for _ in range(len(rimaste) - restano_n):
-        tagliabili = [i for i, (nome, _) in enumerate(rimaste)
-                      if nome in ("Qualità", "Soglia", "Ritmo maratona")]
+        tagliabili = [i for i, s in enumerate(rimaste)
+                      if s[0] in ("Qualità", "Soglia", "Ritmo maratona")]
         i = tagliabili[0] if tagliabili else next(
-            (j for j, (nome, _) in enumerate(rimaste) if nome != "Lungo"), 0)
+            (j for j, s in enumerate(rimaste) if s[0] != "Lungo"), 0)
         rimaste.pop(i)
 
     # Un evento che sostituisce il lungo può essere più lungo del lungo: se il
@@ -1145,14 +1163,14 @@ def sedute_rimanenti(piano, settimana, fase, n_sett, evento=None):
     if evento:
         km_evento = evento.get("km", 0)
         while rimaste and (settimana["km"] + km_evento
-                           + sum(km for _, km in rimaste)) > vol_previsto:
-            tagliabili = [i for i, (nome, _) in enumerate(rimaste)
-                          if nome in ("Qualità", "Soglia", "Ritmo maratona")]
+                           + sum(s[1] for s in rimaste)) > vol_previsto:
+            tagliabili = [i for i, s in enumerate(rimaste)
+                          if s[0] in ("Qualità", "Soglia", "Ritmo maratona")]
             i = tagliabili[0] if tagliabili else next(
-                (j for j, (nome, _) in enumerate(rimaste) if nome != "Lungo"), 0)
+                (j for j, s in enumerate(rimaste) if s[0] != "Lungo"), 0)
             rimaste.pop(i)
 
-    return rimaste, settimana["km"] + sum(km for _, km in rimaste) + km_evento
+    return rimaste, settimana["km"] + sum(s[1] for s in rimaste) + km_evento
 
 def settimane_nella_fase(piano, settimane):
     """Quante settimane piene sono passate dall'inizio della fase corrente."""
@@ -1163,8 +1181,9 @@ def settimane_nella_fase(piano, settimane):
 # I CANCELLI
 # ============================================
 
-def valuta_cancello(fase, settimane, corse):
+def valuta_cancello(fase, settimane, corse, piano=None):
     """Restituisce (lista di criteri, aperto). Ogni criterio: (fatto, testo, dettaglio)."""
+    piano = piano or {}
     chiuse = [s for s in settimane if not s["in_corso"]]
     criteri = []
 
@@ -1200,10 +1219,12 @@ def valuta_cancello(fase, settimane, corse):
                         "questo lo sai solo tu — i dati non lo vedono"))
 
     elif fase == 1:
-        mezze = [c for c in corse if c["km"] >= 21.0 and c["minuti"] <= MEZZA_OBIETTIVO_MIN]
+        soglia = round((piano.get("mezza", {}).get("obiettivo_secondi") or 0) / 60) \
+                 or MEZZA_OBIETTIVO_MIN
+        mezze = [c for c in corse if c["km"] >= 21.0 and c["minuti"] <= soglia]
         migliore = min((c["minuti"] for c in corse if c["km"] >= 21.0), default=None)
         criteri.append((len(mezze) > 0,
-                        "Mezza maratona sotto 1:52",
+                        f"Mezza maratona sotto {soglia // 60}:{soglia % 60:02d}",
                         f"migliore: {migliore} min" if migliore else "nessuna mezza ancora"))
 
         n52 = sum(1 for s in chiuse if s["km"] >= 52)
@@ -1352,7 +1373,17 @@ def stampa_report(piano, corse, settimane):
     print(f"  Volume    {corrente['km']:5.1f} / {vol_previsto:4.1f} km  {barra(corrente['km'], vol_previsto)}")
     if rientro:
         print(f"  Uscite    {corrente['n']:5d} /    ?   (dipende da come va la prova)")
-        print("  Lungo         —       nessuno, questa settimana")
+        # Nelle prime settimane del rientro non c'era un lungo e la riga diceva
+        # "nessuno". Dal 21/09 c'è: stamparlo comunque "nessuno" faceva sparire
+        # dal riepilogo la corsa più importante della settimana.
+        lungo_rientro = max((s.get("km", 0) for s in rientro.get("sedute", [])),
+                            default=0)
+        if corrente["lungo"] <= 0:
+            print("  Lungo         —       nessuno, questa settimana")
+        elif lungo_rientro > 0:
+            print(f"  Lungo     {corrente['lungo']:5.1f} / {lungo_rientro:4.1f} km")
+        else:
+            print(f"  Lungo     {corrente['lungo']:5.1f} km")
     else:
         print(f"  Uscite    {corrente['n']:5d} / {piano['giorni_settimana']:4d}")
         print(f"  Lungo     {corrente['lungo']:5.1f} / {lungo_obiettivo:4.1f} km")
@@ -1402,8 +1433,8 @@ def stampa_report(piano, corse, settimane):
                   f"previsto {lungo_obiettivo:.1f})")
         print()
 
-        for nome, km in rimanenti:
-            print(f"  {nome:<16} {km:5.1f} km   {ritmo_di(nome, rientro)}")
+        for nome, km, come in rimanenti:
+            print(f"  {nome:<16} {km:5.1f} km   {come or ritmo_di(nome, rientro)}")
         if evento:
             km_ev = evento.get("km", 6.0)
             etichetta = evento.get("etichetta", "Evento").capitalize()
@@ -1455,7 +1486,7 @@ def ritmo_di(nome_seduta, rientro=None):
     }.get(nome_seduta, "")
 
 def stampa_cancello(fase, settimane, corse):
-    criteri, aperto = valuta_cancello(fase, settimane, corse)
+    criteri, aperto = valuta_cancello(fase, settimane, corse, piano)
     titolo(f"CANCELLO PER LA FASE {fase + 1}" if fase < 2 else "TRAGUARDO")
     for fatto, testo, dettaglio in criteri:
         simbolo = "✓" if fatto else ("·" if fatto is None else "✗")
@@ -1492,7 +1523,7 @@ def avanza_fase(piano, settimane, corse):
     if fase >= 2:
         print("✗ Sei già nell'ultima fase.")
         return
-    criteri, aperto = valuta_cancello(fase, settimane, corse)
+    criteri, aperto = valuta_cancello(fase, settimane, corse, piano)
     if not aperto:
         print(f"✗ Il cancello per la fase {fase + 1} è ancora chiuso.")
         stampa_cancello(fase, settimane, corse)
@@ -1549,8 +1580,12 @@ if __name__ == "__main__":
         dopo = continuita(c["id"])
         titolo("SOSTA SEGNATA COME FORZATA")
         print(f"  {data_c} · {c['nome']} · al km {km:.2f} — {perche}\n")
-        if dopo.km == prima.km:
-            print(f"  ⚠ La corsa continua non cambia ({dopo.km:.2f} km).")
+        # Il controllo guardava solo il tratto PIÙ LUNGO: una sosta in mezzo a
+        # due tratti corti veniva registrata davvero, ma l'avviso diceva che
+        # al km indicato non c'era niente. Quello che dice se la sosta è stata
+        # trovata è se cambia qualcosa — pezzi o minuti forzati — non il record.
+        if (dopo.pezzi, dopo.forzato) == (prima.pezzi, prima.forzato):
+            print("  ⚠ Non cambia niente.")
             print("     Al km indicato non risulta nessuna sosta: controlla la")
             print(f"     distanza (tolleranza ±{TOLLERANZA_SOSTA_KM*1000:.0f} m).")
         else:
